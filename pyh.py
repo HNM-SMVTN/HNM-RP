@@ -1,1 +1,2 @@
-print('hoonam')
+print('hoonam') 
+print('samavatian')
