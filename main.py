@@ -1,162 +1,142 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import psycopg2
-from psycopg2 import sql
+from typing import List
 
 
-DB_NAME = "person_db"
-DB_USER = "postgres"
-DB_PASS = "hoonam1386"
-DB_HOST = "localhost"
-DB_PORT = "5432"
+app = FastAPI(title="Person Management API")
 
-def connect_postgres():
+
+class Person(BaseModel):
+    first_name: str
+    last_name: str
+    birth_date: str
+    gender: str
+    phone_number: str
+
+
+class PersonOut(Person):
+    id: int
+
+
+def get_conn(database="person_db"):
     return psycopg2.connect(
-        dbname="postgres",
-        user=DB_USER,
-        password=DB_PASS,
-        host=DB_HOST,
-        port=DB_PORT
+        dbname=database,
+        user="postgres",
+        password="hoonam1386",  
+        host="localhost",
+        port="5432"
     )
-
 
 def create_database():
     try:
-        conn = connect_postgres()
+        conn = get_conn("postgres")
         conn.autocommit = True
         cur = conn.cursor()
-        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(DB_NAME)))
-        print("✓ دیتابیس ساخته شد.")
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = 'person_db'")
+        exists = cur.fetchone()
+        if not exists:
+            cur.execute('CREATE DATABASE person_db')
+            print("Database 'person_db' created.")
+        else:
+            print("Database already exists.")
         cur.close()
         conn.close()
     except Exception as e:
-        print(f"(i) ساخت دیتابیس رد شد یا قبلاً ساخته شده. ({e})")
-
-
-def connect():
-    return psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASS,
-        host=DB_HOST,
-        port=DB_PORT
-    )
+        print("Error creating database:", e)
 
 
 def create_table():
-    try:
-        conn = connect()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS people (
-                id SERIAL PRIMARY KEY,
-                first_name TEXT,
-                last_name TEXT,
-                birth_date DATE,
-                gender TEXT,
-                phone_number TEXT
-            );
-        """)
-        conn.commit()
-        print("✓ جدول ساخته شد.")
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"× خطا در ساخت جدول: {e}")
-
-
-def add_person():
-    conn = connect()
+    conn = get_conn()
     cur = conn.cursor()
-    fname = input("نام: ")
-    lname = input("نام خانوادگی: ")
-    birth = input("تاریخ تولد (YYYY-MM-DD): ")
-    gender = input("جنسیت (مرد/زن): ")
-    phone = input("شماره موبایل: ")
-
     cur.execute("""
-        INSERT INTO people (first_name, last_name, birth_date, gender, phone_number)
-        VALUES (%s, %s, %s, %s, %s);
-    """, (fname, lname, birth, gender, phone))
-
+        CREATE TABLE IF NOT EXISTS people (
+            id SERIAL PRIMARY KEY,
+            first_name TEXT NOT NULL,
+            last_name TEXT NOT NULL,
+            birth_date DATE NOT NULL,
+            gender TEXT NOT NULL,
+            phone_number TEXT NOT NULL
+        );
+    """)
     conn.commit()
-    print("✓ فرد با موفقیت اضافه شد.")
     cur.close()
     conn.close()
-def show_all():
-    conn = connect()
+
+
+@app.on_event("startup")
+def startup_event():
+    create_database()
+    create_table()
+
+
+@app.post("/people", response_model=PersonOut)
+def create_person(p: Person):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO people (first_name, last_name, birth_date, gender, phone_number)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id;
+    """, (p.first_name, p.last_name, p.birth_date, p.gender, p.phone_number))
+    new_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {**p.dict(), "id": new_id}
+
+
+@app.get("/people", response_model=List[PersonOut])
+def get_people():
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT * FROM people;")
     rows = cur.fetchall()
-    print("\n--- لیست افراد ---")
-    for row in rows:
-        print(f"ID: {row[0]}, نام: {row[1]} {row[2]}, تولد: {row[3]}, جنسیت: {row[4]}, موبایل: {row[5]}")
     cur.close()
     conn.close()
+    return [
+        {
+            "id": row[0],
+            "first_name": row[1],
+            "last_name": row[2],
+            "birth_date": row[3],
+            "gender": row[4],
+            "phone_number": row[5]
+        }
+        for row in rows
+    ]
 
 
-def update_person():
-    conn = connect()
+@app.put("/people/{person_id}", response_model=PersonOut)
+def update_person(person_id: int, p: Person):
+    conn = get_conn()
     cur = conn.cursor()
-    id = input("ID فرد برای بروزرسانی: ")
-    fname = input("نام جدید: ")
-    lname = input("نام خانوادگی جدید: ")
-    birth = input("تاریخ تولد جدید: ")
-    gender = input("جنسیت جدید: ")
-    phone = input("شماره موبایل جدید: ")
-
     cur.execute("""
         UPDATE people
-        SET first_name = %s,
-            last_name = %s,
-            birth_date = %s,
-            gender = %s,
-            phone_number = %s
-        WHERE id = %s;
-    """, (fname, lname, birth, gender, phone, id))
-
+        SET first_name=%s, last_name=%s, birth_date=%s, gender=%s, phone_number=%s
+        WHERE id=%s
+        RETURNING id;
+    """, (p.first_name, p.last_name, p.birth_date, p.gender, p.phone_number, person_id))
+    updated = cur.fetchone()
     conn.commit()
-    print("✓ اطلاعات بروزرسانی شد.")
     cur.close()
     conn.close()
+    if updated:
+        return {**p.dict(), "id": person_id}
+    else:
+        raise HTTPException(status_code=404, detail="Person not found")
 
 
-def delete_person():
-    conn = connect()
+@app.delete("/people/{person_id}")
+def delete_person(person_id: int):
+    conn = get_conn()
     cur = conn.cursor()
-    id = input("ID فرد برای حذف: ")
-    cur.execute("DELETE FROM people WHERE id = %s;", (id,))
+    cur.execute("DELETE FROM people WHERE id=%s RETURNING id;", (person_id,))
+    deleted = cur.fetchone()
     conn.commit()
-    print("✓ فرد حذف شد.")
     cur.close()
     conn.close()
-
-
-def menu():
-    while True:
-        print("\n--- منو اصلی ---")
-        print("1. افزودن فرد جدید")
-        print("2. نمایش افراد")
-        print("3. بروزرسانی اطلاعات")
-        print("4. حذف فرد")
-        print("5. خروج")
-
-        choice = input("انتخاب شما: ")
-
-        if choice == "1":
-            add_person()
-        elif choice == "2":
-            show_all()
-        elif choice == "3":
-            update_person()
-        elif choice == "4":
-            delete_person()
-        elif choice == "5":
-            print("خروج از برنامه...")
-            break
-        else:
-            print("گزینه نامعتبر.")
-def main():
-    create_database()
-    create_table()
-    menu()
-if __name__=='__main__':
-    main()
+    if deleted:
+        return {"message": f"Person with id {person_id} deleted successfully."}
+    else:
+        raise HTTPException(status_code=404, detail="Person not found")
